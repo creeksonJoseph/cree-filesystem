@@ -1,74 +1,128 @@
 # Cree Filesystem
 
-Cree Filesystem is a Python 3 simulation of a Unix-like filesystem. It models files, directories, inode identities, users, groups, ownership, Unix-style permissions and persistent storage. It is an educational userspace simulation, not a kernel filesystem or a Linux clone.
+Cree Filesystem is a Python 3 userspace simulation of a Unix-like filesystem. It models an inode table, directory entries, file contents, users, groups, ownership, Unix-style permissions and JSON persistence. It does not mount a real filesystem or execute host operating-system commands.
 
 ## Architecture
 
-The implementation follows a small layered design:
+The project uses a layered design with explicit ownership of responsibilities:
 
-- **Shell (\`cmd.Cmd\`)** — owns the interactive command loop, prompt, help, command parsing and terminal output. Each shell command is implemented as a \`do_<command>()\` method. The shell delegates operations; it does not implement filesystem rules.
-- **Filesystem** — owns the inode table, root inode, current-directory inode, path resolution, directory traversal, file operations, permission enforcement and JSON persistence.
-- **Models** — represent inodes, files, directories, users and groups.
-- **Permissions** — centralizes owner/group/other permission checks and octal mode parsing.
+- **Interactive shell — cmd.Cmd:** owns the REPL, prompt, command dispatch, help, argument parsing and terminal output. Commands are implemented as do_<command>() methods. The shell delegates filesystem behaviour and does not manipulate inode state directly.
+- **Filesystem — FileSystem:** owns the inode table, root/current-directory inode IDs, path resolution, directory traversal, file operations, permission enforcement, user/group state and persistence.
+- **Models:** represent inodes, files, directories, users and groups.
+- **Permission manager:** centralizes owner/group/other permission checks and octal mode parsing.
 
 ### Inode-table model
 
-The filesystem keeps a central mapping of inode IDs to node objects. A directory stores entries as \`name -> inode_id\` references; it does not own nested file or directory objects. The root and current working directory are tracked by inode ID. Paths are resolved by traversing directory entries from the root inode.
+The filesystem stores nodes in one central mapping:
 
-The simulated filesystem is rooted at \`/\`. Paths are resolved only inside this in-memory tree. The host filesystem is used only for the JSON save file.
+- inode_id -> Node in the filesystem inode table.
+- entry_name -> inode_id in each directory's children mapping.
+- The root directory and current working directory are tracked by inode ID.
 
-## Features
+Directories do not contain nested Node objects. Path lookup starts at the root inode and follows directory entries one component at a time. Hard links and symbolic links are not implemented, so each non-root inode has exactly one parent.
 
-- Create directories and files; read and write file contents.
-- List directories and inspect the hierarchy.
-- Rename, move, copy and remove files/directories.
-- Octal permissions such as \`755\` and \`644\` with owner/group/other access checks.
-- Simulated users and groups, ownership changes and root permission bypass.
-- Search by filename or file content.
-- Metadata including inode ID, owner, group, mode and timestamps.
-- Save and restore the filesystem state as JSON.
+The simulated namespace is rooted at /. The host filesystem is used only for the JSON persistence file.
 
-Hard links, symbolic links, GUI, real disk allocation, journaling, networking, concurrency, kernel integration and full Unix shell compatibility are intentionally out of scope.
+## Requirements
 
-## Run
+- Python 3.10 or newer.
+- uv for environment and project management.
 
-Requires Python 3.10 or newer.
+## Setup
 
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -e .
-    cree-fs
+From the repository root:
 
-Or run without installing:
+    uv sync
 
-    PYTHONPATH=src python -m cree_filesystem
+This creates .venv, installs the project in editable mode and uses the committed uv.lock to keep the environment reproducible.
 
-Use \`--fresh\` to start with a clean in-memory filesystem. The default save file is \`cree-fs.json\` in the current working directory. The shell saves when \`exit\` or Ctrl-D is used.
+Start the interactive shell:
 
-## Example
+    uv run cree-fs
 
-    root@cree:/$ mkdir /home
-    root@cree:/$ mkdir /home/joseph
-    root@cree:/$ touch /home/joseph/notes.txt
-    root@cree:/$ write /home/joseph/notes.txt "Hello filesystem"
-    root@cree:/$ cat /home/joseph/notes.txt
+Start with a fresh in-memory filesystem:
+
+    uv run cree-fs --fresh
+
+Choose a persistence file:
+
+    uv run cree-fs --storage ./data/filesystem.json
+
+The default persistence file is cree-fs.json in the current working directory. The shell saves when save, exit or Ctrl-D is used. --fresh starts with a clean state; it does not delete an existing save file until the new state is saved.
+
+## Shell commands
+
+| Command | Purpose |
+|---|---|
+| help | List commands or show command help |
+| pwd, cd PATH | Print or change the working directory |
+| ls [PATH], tree [PATH] | List entries or display the hierarchy |
+| mkdir [-p] PATH, touch PATH | Create directories or files |
+| cat PATH, write PATH TEXT, append PATH TEXT | Read or modify file contents |
+| rm [-r] PATH | Remove a file or directory |
+| mv SOURCE DEST, cp SOURCE DEST | Move/rename or copy nodes |
+| chmod MODE PATH, chown USER[:GROUP] PATH | Change permissions or ownership |
+| useradd USER [GROUP], groupadd GROUP | Create simulated users and groups |
+| usermod -aG GROUP USER | Add a user to a supplementary group |
+| su USER, whoami, id, groups [USER] | Switch or inspect simulated identity |
+| find NAME [PATH], grep TEXT [PATH] | Search names or file contents |
+| stat PATH | Display inode metadata |
+| save, exit | Persist state or save and leave |
+
+Arguments containing spaces should be quoted:
+
+    mkdir "/home/project files"
+    write "/home/project files/notes.txt" "filesystem assignment"
+
+## Permissions
+
+Permission modes use the familiar octal owner/group/other representation:
+
+- 7 — read, write and execute.
+- 6 — read and write.
+- 5 — read and execute.
+- 4 — read only.
+- 0 — no permissions.
+
+For example, chmod 640 report.txt grants read/write to the owner, read to the group and no access to others. Directory traversal requires execute permission; listing/searching directory entries requires read permission, and recursive traversal requires execute permission.
+
+The simulator includes a root user with permission bypass. User switching is a simulation convenience, not an authentication system: there are no passwords, sessions or host security boundaries.
+
+## Example session
+
+    root@cree:/$ mkdir -p /home/joseph/projects
+    root@cree:/$ touch /home/joseph/projects/notes.txt
+    root@cree:/$ write /home/joseph/projects/notes.txt "Hello filesystem"
+    root@cree:/$ cat /home/joseph/projects/notes.txt
     Hello filesystem
+    root@cree:/$ chmod 640 /home/joseph/projects/notes.txt
     root@cree:/$ tree /
     /
     └── home
         └── joseph
-            └── notes.txt
+            └── projects
+                └── notes.txt
 
-## Python API
+## Persistence format
 
-    from cree_filesystem import FileSystem
-
-    fs = FileSystem("cree-fs.json")
-    fs.mkdir("/home")
-    fs.create_file("/home/hello.txt", "Hello!")
-    print(fs.read_file("/home/hello.txt"))
-    fs.save()
+The JSON save contains the format version, inode table, directory entry references, user/group records and current session state. Loading validates inode references, reachability, parent counts, ownership IDs and the saved working directory before accepting the state.
 
 ## Scope
 
-This project applies Unix-inspired filesystem concepts to an in-memory inode table. It does not mount a disk, alter host permissions, execute host commands, or provide operating-system-level isolation. JSON is the simulator's persistence format.
+Included:
+
+- In-memory hierarchical filesystem and path traversal.
+- Inode identities and directory name-to-inode references.
+- File and directory creation, reading, writing, listing, renaming, moving, copying and deletion.
+- Owner/group/other rwx permissions, UID/GID ownership, supplementary groups and root bypass.
+- Metadata, filename/content search and JSON persistence.
+- Interactive Unix-inspired command interface built with Python's standard-library cmd module.
+
+Intentionally excluded:
+
+- Kernel integration, mounting, real disk allocation and block management.
+- Hard links, symbolic links, journaling and crash recovery.
+- GUI, networking, concurrency and full Unix shell compatibility.
+- Password authentication, process permissions and host operating-system isolation.
+
+This is an educational filesystem model, not a secure sandbox or a replacement for a real operating-system filesystem.
