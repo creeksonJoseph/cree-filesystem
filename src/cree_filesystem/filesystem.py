@@ -116,22 +116,23 @@ class FileSystem:
         self, path: str, mode: int | str = 0o755, parents: bool = False
     ) -> Directory:
         if parents:
-            absolute = self._absolute(path)
-            current = "/"
-            result = self.root
-            for part in self._parts(absolute):
-                current = posixpath.join(current, part)
-                try:
-                    existing = self.resolve(current)
-                except FileSystemError as exc:
-                    if not str(exc).startswith("No such file or directory:"):
-                        raise
-                    result = self.mkdir(current, mode=mode)
+            current = self.root
+            for part in self._parts(path):
+                self._require(current, PM.EXECUTE)
+                child_inode = current.children.get(part)
+                if child_inode is not None:
+                    child = self.inodes.get(child_inode)
+                    if not isinstance(child, Directory):
+                        raise FileSystemError(
+                            f"Path component exists and is not a directory: {part}"
+                        )
+                    current = child
                     continue
-                if not isinstance(existing, Directory):
-                    raise FileSystemError(f"Not a directory: {current}")
-                result = existing
-            return result
+                self._require(current, PM.WRITE | PM.EXECUTE)
+                child = Directory(**self._attributes(part, mode))
+                self._register(current, part, child)
+                current = child
+            return current
 
         parent, name = self._parent(path)
         node = Directory(**self._attributes(name, mode))
