@@ -21,10 +21,14 @@ class CreeShell(cmd.Cmd):
     def __init__(self, filesystem: FileSystem) -> None:
         super().__init__()
         self.fs = filesystem
+        self.prompt = self._make_prompt()
 
-    @property
-    def prompt(self) -> str:
+    def _make_prompt(self) -> str:
         return f"{self.fs.current_user.username}@cree:{self.fs.cwd}$ "
+
+    def postcmd(self, stop: bool, line: str) -> bool:
+        self.prompt = self._make_prompt()
+        return stop
 
     @staticmethod
     def _args(argument: str) -> list[str]:
@@ -54,8 +58,6 @@ class CreeShell(cmd.Cmd):
         args = self._args(argument)
         entries = self._run(self.fs.list_dir, args[0] if args else ".")
         if entries is None:
-            return
-        if not entries:
             return
         for item in entries:
             kind = "d" if item["type"] == "directory" else "-"
@@ -222,18 +224,19 @@ class CreeShell(cmd.Cmd):
 
     def do_save(self, argument: str) -> None:
         """save — persist the simulated filesystem to JSON."""
-        self._run(self.fs.save)
-        print("Filesystem saved.")
+        try:
+            self.fs.save()
+            print("Filesystem saved.")
+        except (OSError, FileSystemError) as exc:
+            print(f"error: {exc}")
 
     def do_exit(self, argument: str) -> bool:
         """exit — save and leave the shell."""
-        if self._run(self.fs.save) is not None:
-            pass
-        print("Filesystem saved.")
+        self.do_save(argument)
         return True
 
     def do_EOF(self, argument: str) -> bool:
-        """Ctrl-D — leave the shell."""
+        """Ctrl-D — save and leave the shell."""
         print()
         return self.do_exit(argument)
 
