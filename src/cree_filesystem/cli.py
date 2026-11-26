@@ -99,9 +99,9 @@ class CreeShell(cmd.Cmd):
         long_format = False
         paths: list[str] = []
 
-        for item in args:
+        for index, item in enumerate(args):
             if item == "--":
-                paths.extend(args[args.index(item) + 1:])
+                paths.extend(args[index + 1:])
                 break
             if item in ("-a", "--all"):
                 show_all = True
