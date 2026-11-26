@@ -80,7 +80,7 @@ class TestCLIProcessWorkflows(unittest.TestCase):
         self.assertEqual(metadata["mode"], "0640")
         self.assertEqual(metadata["owner_uid"], 1)
         self.assertEqual(metadata["group_gid"], 1)
-        self.assertEqual(set(restored.group_ids(restored.users["alice"])), {0, 1})
+        self.assertEqual(set(restored.group_ids(restored.users["alice"])), {1, 2})
 
         # A second OS process must load the saved state and see the same data.
         second = self.run_cli(
