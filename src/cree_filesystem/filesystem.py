@@ -56,7 +56,10 @@ class FileSystem:
         if not isinstance(path, str) or not path:
             raise FileSystemError("Path must be a non-empty string")
         combined = path if path.startswith("/") else posixpath.join(self.cwd, path)
-        return posixpath.normpath(combined)
+        normalized = posixpath.normpath(combined)
+        if normalized.startswith("//"):
+            normalized = "/" + normalized.lstrip("/")
+        return normalized
 
     def _parts(self, path: str) -> list[str]:
         return [part for part in self._absolute(path).split("/") if part]
@@ -116,23 +119,34 @@ class FileSystem:
         self, path: str, mode: int | str = 0o755, parents: bool = False
     ) -> Directory:
         if parents:
+            parsed_mode = PM.parse_mode(mode)
             current = self.root
-            for part in self._parts(path):
-                self._require(current, PM.EXECUTE)
-                child_inode = current.children.get(part)
-                if child_inode is not None:
-                    child = self.inodes.get(child_inode)
-                    if not isinstance(child, Directory):
-                        raise FileSystemError(
-                            f"Path component exists and is not a directory: {part}"
-                        )
+            created: list[tuple[Directory, str, str, str]] = []
+            try:
+                for part in self._parts(path):
+                    self._require(current, PM.EXECUTE)
+                    child_inode = current.children.get(part)
+                    if child_inode is not None:
+                        child = self.inodes.get(child_inode)
+                        if not isinstance(child, Directory):
+                            raise FileSystemError(
+                                f"Path component exists and is not a directory: {part}"
+                            )
+                        current = child
+                        continue
+                    self._require(current, PM.WRITE | PM.EXECUTE)
+                    prev_mtime = current.modified_at
+                    child = Directory(**self._attributes(part, parsed_mode))
+                    self._register(current, part, child)
+                    created.append((current, part, child.inode, prev_mtime))
                     current = child
-                    continue
-                self._require(current, PM.WRITE | PM.EXECUTE)
-                child = Directory(**self._attributes(part, mode))
-                self._register(current, part, child)
-                current = child
-            return current
+                return current
+            except Exception:
+                for parent_dir, name, child_inode, prev_mtime in reversed(created):
+                    parent_dir.children.pop(name, None)
+                    self.inodes.pop(child_inode, None)
+                    parent_dir.modified_at = prev_mtime
+                raise
 
         parent, name = self._parent(path)
         node = Directory(**self._attributes(name, mode))
@@ -183,14 +197,16 @@ class FileSystem:
         self.current_dir = node.inode
         return self.cwd
 
-    def _remove_inode_tree(self, inode: str) -> None:
+    def _collect_remove_inodes(self, inode: str) -> list[str]:
         node = self.inodes.get(inode)
         if node is None:
             raise FileSystemError(f"Corrupt inode reference: {inode}")
-        if isinstance(node, Directory):
-            for child_inode in list(node.children.values()):
-                self._remove_inode_tree(child_inode)
-        del self.inodes[inode]
+        inodes = [inode]
+        if isinstance(node, Directory) and node.children:
+            self._require(node, PM.READ | PM.WRITE | PM.EXECUTE)
+            for child_inode in node.children.values():
+                inodes.extend(self._collect_remove_inodes(child_inode))
+        return inodes
 
     def remove(self, path: str, recursive: bool = False) -> None:
         parent, name = self._parent(path)
@@ -205,13 +221,15 @@ class FileSystem:
         if isinstance(node, Directory) and node.children and not recursive:
             raise FileSystemError("Directory is not empty (use recursive removal)")
 
+        inodes_to_remove = self._collect_remove_inodes(inode)
         absolute = self._absolute(path)
         if self.cwd == absolute or self.cwd.startswith(absolute + "/"):
             self.cwd = "/"
             self.current_dir = self.root_inode
 
         del parent.children[name]
-        self._remove_inode_tree(inode)
+        for target_inode in inodes_to_remove:
+            del self.inodes[target_inode]
         parent.touch()
 
     def rename(self, source: str, destination: str) -> None:
@@ -219,7 +237,9 @@ class FileSystem:
         inode = src_parent.children.get(src_name)
         if inode is None:
             raise FileSystemError(f"No such file or directory: {source}")
-        node = self.inodes[inode]
+        node = self.inodes.get(inode)
+        if node is None:
+            raise FileSystemError(f"Corrupt inode reference: {inode}")
         src = self._absolute(source)
         requested_destination = self._absolute(destination)
 
@@ -256,7 +276,9 @@ class FileSystem:
     def _collect_copy(
         self, source_inode: str, new_name: str, pending: dict[str, Node]
     ) -> Node:
-        source = self.inodes[source_inode]
+        source = self.inodes.get(source_inode)
+        if source is None:
+            raise FileSystemError(f"Corrupt inode reference: {source_inode}")
         if isinstance(source, File):
             self._require(source, PM.READ)
         else:
@@ -333,12 +355,18 @@ class FileSystem:
             node.group_gid = self.groups[groupname].gid
         node.touch()
 
+    @staticmethod
+    def _is_valid_identifier(name: str) -> bool:
+        return bool(name) and ":" not in name and not any(ch.isspace() for ch in name)
+
     def add_user(self, username: str, groupname: str | None = None) -> User:
         if not self.current_user.is_root:
             raise PermissionDenied("Only root can add users")
-        if not username or username in self.users:
+        if not self._is_valid_identifier(username) or username in self.users:
             raise FileSystemError(f"Invalid or existing username: {username}")
         groupname = groupname or username
+        if not self._is_valid_identifier(groupname):
+            raise FileSystemError(f"Invalid group name: {groupname}")
         if groupname not in self.groups:
             gid = max(group.gid for group in self.groups.values()) + 1
             self.groups[groupname] = Group(groupname, gid)
@@ -352,7 +380,7 @@ class FileSystem:
     def add_group(self, name: str) -> Group:
         if not self.current_user.is_root:
             raise PermissionDenied("Only root can add groups")
-        if not name or name in self.groups:
+        if not self._is_valid_identifier(name) or name in self.groups:
             raise FileSystemError(f"Invalid or existing group: {name}")
         group = Group(name, max(item.gid for item in self.groups.values()) + 1)
         self.groups[name] = group
@@ -388,7 +416,7 @@ class FileSystem:
         base = self._absolute(path)
         results: list[str] = []
 
-        if query.casefold() in start.name.casefold() and base != "/":
+        if not content and query.casefold() in start.name.casefold() and base != "/":
             results.append(base)
         if isinstance(start, File):
             if content:
@@ -454,20 +482,45 @@ class FileSystem:
             "groups": [group.to_dict() for group in self.groups.values()],
         }
 
+    @staticmethod
+    def _is_int(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
     def save(self, path: str | Path | None = None) -> None:
         target = Path(path) if path else self.storage_path
         if target is None:
             raise FileSystemError("No storage path configured")
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(json.dumps(self._state(), indent=2), encoding="utf-8")
-        temporary.replace(target)
+        try:
+            temporary.write_text(json.dumps(self._state(), indent=2), encoding="utf-8")
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def _validate_state(self) -> None:
         """Validate inode references and ownership before accepting loaded state."""
         root = self.inodes.get(self.root_inode)
         if not isinstance(root, Directory) or root.name != "/":
             raise FileSystemError("Invalid root inode")
+
+        for user in self.users.values():
+            if (
+                not isinstance(user.username, str)
+                or not self._is_int(user.uid)
+                or not self._is_int(user.primary_gid)
+                or not isinstance(user.is_root, bool)
+            ):
+                raise FileSystemError("Invalid user record in saved state")
+        for group in self.groups.values():
+            if (
+                not isinstance(group.name, str)
+                or not self._is_int(group.gid)
+                or not isinstance(group.members, list)
+                or any(not self._is_int(uid) for uid in group.members)
+            ):
+                raise FileSystemError("Invalid group record in saved state")
 
         uid_map = {user.uid: user for user in self.users.values()}
         gid_map = {group.gid: group for group in self.groups.values()}
@@ -491,6 +544,22 @@ class FileSystem:
             if any(uid not in uid_map for uid in group.members):
                 raise FileSystemError(f"Unknown member in group {group.name}")
         for inode, node in self.inodes.items():
+            if (
+                not isinstance(inode, str)
+                or not isinstance(node.inode, str)
+                or not isinstance(node.name, str)
+                or not self._is_int(node.owner_uid)
+                or not self._is_int(node.group_gid)
+                or not self._is_int(node.mode)
+            ):
+                raise FileSystemError(f"Invalid inode metadata on inode {inode}")
+            if isinstance(node, File) and not isinstance(node.content, str):
+                raise FileSystemError(f"Invalid file content on inode {inode}")
+            if isinstance(node, Directory) and any(
+                not isinstance(k, str) or not isinstance(v, str)
+                for k, v in node.children.items()
+            ):
+                raise FileSystemError(f"Invalid directory children on inode {inode}")
             if inode != node.inode:
                 raise FileSystemError(f"Inode table key mismatch: {inode}")
             if node.owner_uid not in uid_map or node.group_gid not in gid_map:
@@ -536,6 +605,10 @@ class FileSystem:
         current = self.inodes.get(self.current_dir)
         if not isinstance(current, Directory):
             raise FileSystemError("Current directory inode is invalid")
+        if not isinstance(self.cwd, str) or not self.cwd.startswith("/"):
+            raise FileSystemError("Saved working directory must be an absolute path")
+        if self._absolute(self.cwd) != self.cwd:
+            raise FileSystemError("Saved working directory must be normalized")
         # A process may retain its working directory after permissions change.
         # Resolve as root here to validate identity, not current-user access.
         if self.resolve(self.cwd, user=self.users["root"]).inode != self.current_dir:
@@ -546,12 +619,16 @@ class FileSystem:
         target = Path(path)
         try:
             payload = json.loads(target.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise FileSystemError(f"Invalid JSON save file: {exc}") from exc
         if not isinstance(payload, dict) or payload.get("version") != cls.VERSION:
             raise FileSystemError("Unsupported filesystem save version")
 
         try:
+            if not isinstance(payload["inodes"], dict):
+                raise FileSystemError("Invalid inodes table in saved state")
+            if not isinstance(payload["users"], list) or not isinstance(payload["groups"], list):
+                raise FileSystemError("Invalid users or groups table in saved state")
             fs = cls(target)
             fs.inodes = {
                 inode: node_from_dict(data)
@@ -566,6 +643,8 @@ class FileSystem:
                 group["name"]: Group.from_dict(group)
                 for group in payload["groups"]
             }
+            if len(fs.users) != len(payload["users"]) or len(fs.groups) != len(payload["groups"]):
+                raise FileSystemError("Duplicate username or group name in saved state")
             fs.cwd = payload.get("cwd", "/")
             fs.current_dir = payload.get("current_dir", fs.root_inode)
             fs.current_user = fs.users[payload.get("current_user", "root")]
