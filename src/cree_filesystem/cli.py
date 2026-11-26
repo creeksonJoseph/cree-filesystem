@@ -30,12 +30,26 @@ class CreeShell(cmd.Cmd):
         return stop
 
     def onecmd(self, line: str) -> bool:
-        """Keep malformed quoting from terminating the interactive session."""
+        """Isolate command failures so one bad command cannot kill the REPL."""
         try:
             return super().onecmd(line)
         except ValueError as exc:
             print(f"syntax error: {exc}")
             return False
+        except Exception as exc:
+            # A command bug should be visible, but the interactive session must
+            # remain usable so the user can inspect state and continue testing.
+            command = line.split(maxsplit=1)[0] if line.strip() else "<empty>"
+            print(f"internal error while running {command}: {exc}")
+            return False
+
+    def cmdloop(self, intro: str | None = None) -> None:
+        """Treat Ctrl-C as a clean request to save and leave the shell."""
+        try:
+            super().cmdloop(intro=intro)
+        except KeyboardInterrupt:
+            print()
+            self.do_exit("")
 
     @staticmethod
     def _args(argument: str) -> list[str]:
