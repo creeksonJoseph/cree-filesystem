@@ -103,6 +103,14 @@ The simulator includes a root user with permission bypass. User switching is a s
             └── projects
                 └── notes.txt
 
+## Tests
+
+Run the complete test suite from the repository root:
+
+    uv run python -m unittest discover -s tests -v
+
+The suite includes filesystem and shell tests plus end-to-end tests that launch the CLI in separate processes, feed it command sequences, and verify saved state after restarting the application. Tests use isolated temporary storage and do not modify the default `cree-fs.json` file.
+
 ## Persistence format
 
 The JSON save contains the format version, inode table, directory entry references, user/group records and current session state. Loading validates inode references, reachability, parent counts, ownership IDs and the saved working directory before accepting the state.
