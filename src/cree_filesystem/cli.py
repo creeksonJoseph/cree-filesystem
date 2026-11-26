@@ -1,27 +1,35 @@
-"""Interactive Unix-like shell built on Python's cmd module."""
+"""Interactive shell implemented with Python's cmd module."""
+from __future__ import annotations
+
 import argparse
 import cmd
 import shlex
 import sys
+from typing import Callable
 
 from .filesystem import FileSystem, FileSystemError
 from .permissions import PermissionDenied
 
 
 class CreeShell(cmd.Cmd):
-    """Translate shell commands into FileSystem operations.
+    """Command interpreter that delegates filesystem behaviour to FileSystem."""
 
-    The shell owns command parsing and presentation only. Filesystem rules,
-    path resolution, permissions and persistence stay in FileSystem.
-    """
-
-    intro = "Cree Filesystem — Unix-inspired filesystem simulator. Type 'help' for commands."
+    intro = "Cree Filesystem — type 'help' to list available commands."
     ruler = "-"
 
-    def __init__(self, filesystem: FileSystem) -> None:
-        super().__init__()
+    def __init__(self, filesystem: FileSystem, stdin=None, stdout=None) -> None:
+        super().__init__(stdin=stdin, stdout=stdout)
+        if stdin is not None:
+            self.use_rawinput = False
+        self._custom_stdout = stdout
         self.fs = filesystem
         self.prompt = self._make_prompt()
+
+    def _out(self, text: str = "") -> None:
+        if self._custom_stdout is not None:
+            print(text, file=self.stdout)
+        else:
+            print(text)
 
     def _make_prompt(self) -> str:
         return f"{self.fs.current_user.username}@cree:{self.fs.cwd}$ "
@@ -30,62 +38,190 @@ class CreeShell(cmd.Cmd):
         self.prompt = self._make_prompt()
         return stop
 
+    def onecmd(self, line: str) -> bool:
+        """Isolate command failures so one bad command cannot kill the REPL."""
+        if self._custom_stdout is None:
+            self.stdout = sys.stdout
+        try:
+            return super().onecmd(line)
+        except ValueError as exc:
+            self._out(f"syntax error: {exc}")
+            return False
+        except Exception as exc:
+            # A command bug should be visible, but the interactive session must
+            # remain usable so the user can inspect state and continue testing.
+            command = line.split(maxsplit=1)[0] if line.strip() else "<empty>"
+            self._out(f"internal error while running {command}: {exc}")
+            return False
+
+    def cmdloop(self, intro: str | None = None) -> None:
+        """Treat Ctrl-C as a clean request to save and leave the shell."""
+        if self._custom_stdout is None:
+            self.stdout = sys.stdout
+        try:
+            super().cmdloop(intro=intro)
+        except KeyboardInterrupt:
+            self._out()
+            self.do_exit("")
+
     @staticmethod
     def _args(argument: str) -> list[str]:
         return shlex.split(argument)
 
     def emptyline(self) -> None:
-        """Do not repeat the previous command on an empty line."""
+        """Do not repeat the previous command when the input line is empty."""
 
     def default(self, line: str) -> None:
         command = line.split(maxsplit=1)[0] if line.strip() else line
-        print(f"{command}: command not found")
+        self._out(f"{command}: command not found")
 
-    def _run(self, operation, *args, **kwargs):
+    def _run(self, operation: Callable, *args, **kwargs):
         try:
             return operation(*args, **kwargs)
-        except (IndexError, StopIteration, ValueError, FileSystemError,
-                PermissionDenied) as exc:
-            print(f"{type(exc).__name__}: {exc}")
+        except (FileSystemError, PermissionDenied, ValueError, OSError) as exc:
+            self._out(f"error: {exc}")
             return None
 
     def do_pwd(self, argument: str) -> None:
-        """pwd — print the current directory."""
-        print(self.fs.cwd)
+        """pwd — print the current working directory."""
+        if self._args(argument):
+            self._out("usage: pwd")
+            return
+        self._out(self.fs.cwd)
+
+    def do_whoami(self, argument: str) -> None:
+        """whoami — print the active simulated username."""
+        if self._args(argument):
+            self._out("usage: whoami")
+            return
+        self._out(self.fs.current_user.username)
+
+    def do_id(self, argument: str) -> None:
+        """id — display the active simulated UID, primary GID and groups."""
+        if self._args(argument):
+            self._out("usage: id")
+            return
+        user = self.fs.current_user
+        group_ids = sorted(self.fs.group_ids(user))
+        names = [
+            f"{self.fs.groups_by_gid[gid].name}({gid})"
+            for gid in group_ids
+        ]
+        self._out(
+            f"uid={user.uid}({user.username}) gid={user.primary_gid} "
+            f"({self.fs.groups_by_gid[user.primary_gid].name}) "
+            f"groups={','.join(names)}"
+        )
+
+    def do_groups(self, argument: str) -> None:
+        """groups [USER] — list the primary and supplementary groups."""
+        args = self._args(argument)
+        if len(args) > 1:
+            self._out("usage: groups [USER]")
+            return
+        username = args[0] if args else self.fs.current_user.username
+        user = self.fs.users.get(username)
+        if user is None:
+            self._out(f"error: unknown user: {username}")
+            return
+        names = [
+            group.name for group in self.fs.groups.values()
+            if group.gid in self.fs.group_ids(user)
+        ]
+        self._out(" ".join(names))
 
     def do_ls(self, argument: str) -> None:
-        """ls [PATH] — list directory contents."""
+        """ls [-a] [-l] [PATH] — list names or detailed inode metadata."""
         args = self._args(argument)
-        entries = self._run(self.fs.list_dir, args[0] if args else ".")
+        show_all = False
+        long_format = False
+        paths: list[str] = []
+
+        for index, item in enumerate(args):
+            if item == "--":
+                paths.extend(args[index + 1:])
+                break
+            if item in ("-a", "--all"):
+                show_all = True
+            elif item in ("-l", "--long"):
+                long_format = True
+            elif item.startswith("-") and item != "-":
+                flags = item[1:]
+                if not flags or any(flag not in "al" for flag in flags):
+                    self._out("usage: ls [-a] [-l] [PATH]")
+                    return
+                show_all = show_all or "a" in flags
+                long_format = long_format or "l" in flags
+            else:
+                paths.append(item)
+
+        if len(paths) > 1:
+            self._out("usage: ls [-a] [-l] [PATH]")
+            return
+
+        entries = self._run(self.fs.list_dir, paths[0] if paths else ".")
         if entries is None:
             return
+
+        if not show_all:
+            entries = [item for item in entries if not item["name"].startswith(".")]
+
+        if not long_format:
+            self._out("  ".join(item["name"] for item in entries))
+            return
+
         for item in entries:
             kind = "d" if item["type"] == "directory" else "-"
-            print(f"{kind}{item['mode']} {item['owner_uid']}:{item['group_gid']} "
-                  f"{item['inode']} {item['name']}")
+            mode = int(item["mode"], 8)
+            permissions = "".join(
+                letter if mode & bit else "-"
+                for bit, letter in (
+                    (0o400, "r"), (0o200, "w"), (0o100, "x"),
+                    (0o040, "r"), (0o020, "w"), (0o010, "x"),
+                    (0o004, "r"), (0o002, "w"), (0o001, "x"),
+                )
+            )
+            self._out(
+                f"{kind}{permissions} {item['owner_uid']}:{item['group_gid']} "
+                f"{item['inode']} {item['name']}"
+            )
 
     def do_tree(self, argument: str) -> None:
-        """tree [PATH] — display the directory hierarchy."""
+        """tree [PATH] — display a directory hierarchy."""
         args = self._args(argument)
+        if len(args) > 1:
+            self._out("usage: tree [PATH]")
+            return
         result = self._run(self.fs.tree, args[0] if args else "/")
         if result is not None:
-            print(result)
+            self._out(result)
 
     def do_cd(self, argument: str) -> None:
-        """cd PATH — change the current directory."""
+        """cd PATH — change the current working directory."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: cd PATH")
+            self._out("usage: cd PATH")
             return
         self._run(self.fs.change_directory, args[0])
 
     def do_mkdir(self, argument: str) -> None:
-        """mkdir [-p] PATH — create a directory."""
+        """mkdir [-p] PATH — create a directory, optionally with parents."""
         args = self._args(argument)
-        parents = "-p" in args
-        paths = [arg for arg in args if arg != "-p"]
+        parents = False
+        paths: list[str] = []
+        for index, item in enumerate(args):
+            if item == "--":
+                paths.extend(args[index + 1:])
+                break
+            if item == "-p":
+                parents = True
+            elif item.startswith("-") and item != "-":
+                self._out("usage: mkdir [-p] PATH")
+                return
+            else:
+                paths.append(item)
         if len(paths) != 1:
-            print("usage: mkdir [-p] PATH")
+            self._out("usage: mkdir [-p] PATH")
             return
         self._run(self.fs.mkdir, paths[0], parents=parents)
 
@@ -93,7 +229,7 @@ class CreeShell(cmd.Cmd):
         """touch PATH — create an empty file."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: touch PATH")
+            self._out("usage: touch PATH")
             return
         self._run(self.fs.create_file, args[0])
 
@@ -101,98 +237,123 @@ class CreeShell(cmd.Cmd):
         """cat PATH — print a file's contents."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: cat PATH")
+            self._out("usage: cat PATH")
             return
-        result = self._run(self.fs.read_file, args[0])
-        if result is not None:
-            print(result)
+        content = self._run(self.fs.read_file, args[0])
+        if content is not None:
+            self._out(content)
 
     def _write(self, argument: str, append: bool) -> None:
         args = self._args(argument)
         if len(args) < 2:
-            print(f"usage: {'append' if append else 'write'} PATH TEXT")
+            command = "append" if append else "write"
+            self._out(f"usage: {command} PATH TEXT")
             return
-        self._run(self.fs.write_file, args[0], " ".join(args[1:]), append=append)
+        self._run(
+            self.fs.write_file, args[0], " ".join(args[1:]), append=append
+        )
 
     def do_write(self, argument: str) -> None:
         """write PATH TEXT — replace a file's contents."""
         self._write(argument, append=False)
 
     def do_append(self, argument: str) -> None:
-        """append PATH TEXT — append to a file's contents."""
+        """append PATH TEXT — append text to a file."""
         self._write(argument, append=True)
 
     def do_rm(self, argument: str) -> None:
         """rm [-r] PATH — remove a file or directory."""
         args = self._args(argument)
-        recursive = "-r" in args
-        paths = [arg for arg in args if arg != "-r"]
+        recursive = False
+        paths: list[str] = []
+        for index, item in enumerate(args):
+            if item == "--":
+                paths.extend(args[index + 1:])
+                break
+            if item in ("-r", "-R", "--recursive"):
+                recursive = True
+            elif item.startswith("-") and item != "-":
+                self._out("usage: rm [-r] PATH")
+                return
+            else:
+                paths.append(item)
         if len(paths) != 1:
-            print("usage: rm [-r] PATH")
+            self._out("usage: rm [-r] PATH")
             return
         self._run(self.fs.remove, paths[0], recursive=recursive)
 
     def do_mv(self, argument: str) -> None:
-        """mv SOURCE DESTINATION — move or rename a node."""
+        """mv SOURCE DESTINATION — move or rename a file or directory."""
         args = self._args(argument)
         if len(args) != 2:
-            print("usage: mv SOURCE DESTINATION")
+            self._out("usage: mv SOURCE DESTINATION")
             return
         self._run(self.fs.move, *args)
 
     def do_cp(self, argument: str) -> None:
-        """cp SOURCE DESTINATION — copy a node."""
+        """cp SOURCE DESTINATION — copy a file or directory."""
         args = self._args(argument)
         if len(args) != 2:
-            print("usage: cp SOURCE DESTINATION")
+            self._out("usage: cp SOURCE DESTINATION")
             return
         self._run(self.fs.copy, *args)
 
     def do_chmod(self, argument: str) -> None:
-        """chmod MODE PATH — change Unix-style permissions."""
+        """chmod MODE PATH — change owner/group/other permission bits."""
         args = self._args(argument)
         if len(args) != 2:
-            print("usage: chmod MODE PATH")
+            self._out("usage: chmod MODE PATH")
             return
         self._run(self.fs.chmod, args[1], args[0])
 
     def do_chown(self, argument: str) -> None:
-        """chown USER[:GROUP] PATH — change ownership (root only)."""
+        """chown USER[:GROUP] PATH — change node ownership (root only)."""
         args = self._args(argument)
         if len(args) != 2:
-            print("usage: chown USER[:GROUP] PATH")
+            self._out("usage: chown USER[:GROUP] PATH")
             return
         owner, separator, group = args[0].partition(":")
+        if not owner or (separator and not group):
+            self._out("usage: chown USER[:GROUP] PATH")
+            return
         self._run(self.fs.chown, args[1], owner, group if separator else None)
 
     def do_useradd(self, argument: str) -> None:
-        """useradd USER [GROUP] — add a simulated user (root only)."""
+        """useradd USER [GROUP] — create a user and optional primary group."""
         args = self._args(argument)
         if not 1 <= len(args) <= 2:
-            print("usage: useradd USER [GROUP]")
+            self._out("usage: useradd USER [GROUP]")
             return
         self._run(self.fs.add_user, *args)
 
     def do_groupadd(self, argument: str) -> None:
-        """groupadd GROUP — add a simulated group (root only)."""
+        """groupadd GROUP — create a group."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: groupadd GROUP")
+            self._out("usage: groupadd GROUP")
             return
         self._run(self.fs.add_group, args[0])
 
+    def do_usermod(self, argument: str) -> None:
+        """usermod -aG GROUP USER — add a user to a supplementary group."""
+        args = self._args(argument)
+        if len(args) != 3 or args[0] != "-aG":
+            self._out("usage: usermod -aG GROUP USER")
+            return
+        self._run(self.fs.add_user_to_group, args[2], args[1])
+
     def do_su(self, argument: str) -> None:
-        """su USER — switch the simulated user."""
+        """su USER — switch the active simulated user."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: su USER")
+            self._out("usage: su USER")
             return
         user = self._run(self.fs.switch_user, args[0])
         if user is not None:
-            print(f"Switched to {user.username}")
+            self._out(f"Switched to {user.username}")
 
     def do_find(self, argument: str) -> None:
-        """find NAME [PATH] — search names in the filesystem."""
+        """find NAME [PATH] — search directory entries by name."""
         self._search(argument, content=False)
 
     def do_grep(self, argument: str) -> None:
@@ -202,43 +363,60 @@ class CreeShell(cmd.Cmd):
     def _search(self, argument: str, content: bool) -> None:
         args = self._args(argument)
         if not 1 <= len(args) <= 2:
-            print(f"usage: {'grep TEXT' if content else 'find NAME'} [PATH]")
+            command = "grep TEXT" if content else "find NAME"
+            self._out(f"usage: {command} [PATH]")
             return
-        results = self._run(self.fs.search, args[0],
-                            args[1] if len(args) == 2 else "/",
-                            content=content)
+        results = self._run(
+            self.fs.search,
+            args[0],
+            args[1] if len(args) == 2 else "/",
+            content=content,
+        )
         if results is not None:
             for result in results:
-                print(result)
+                self._out(result)
 
     def do_stat(self, argument: str) -> None:
-        """stat PATH — display node metadata."""
+        """stat PATH — display inode metadata."""
         args = self._args(argument)
         if len(args) != 1:
-            print("usage: stat PATH")
+            self._out("usage: stat PATH")
             return
         metadata = self._run(self.fs.stat, args[0])
         if metadata is not None:
             for key, value in metadata.items():
-                print(f"{key}: {value}")
+                self._out(f"{key}: {value}")
 
     def do_save(self, argument: str) -> None:
         """save — persist the simulated filesystem to JSON."""
+        if self._args(argument):
+            self._out("usage: save")
+            return
         try:
             self.fs.save()
-            print("Filesystem saved.")
-        except (OSError, FileSystemError) as exc:
-            print(f"error: {exc}")
+        except (FileSystemError, OSError) as exc:
+            self._out(f"error: could not save filesystem: {exc}")
+            return
+        self._out("Filesystem saved.")
 
     def do_exit(self, argument: str) -> bool:
-        """exit — save and leave the shell."""
-        self.do_save(argument)
+        """exit — save the filesystem and leave the shell."""
+        if self._args(argument):
+            self._out("usage: exit")
+            return False
+        try:
+            self.fs.save()
+        except (FileSystemError, OSError) as exc:
+            self._out(f"error: could not save filesystem: {exc}")
+            return self.fs.storage_path is None
+        self._out("Filesystem saved.")
         return True
 
     def do_EOF(self, argument: str) -> bool:
-        """Ctrl-D — save and leave the shell."""
-        print()
-        return self.do_exit(argument)
+        """Ctrl-D — save the filesystem and leave the shell."""
+        self._out()
+        self.do_exit("")
+        return True
 
 
 def main() -> None:
@@ -249,16 +427,16 @@ def main() -> None:
 
     try:
         if options.fresh:
-            fs = FileSystem(options.storage)
+            filesystem = FileSystem(options.storage)
         else:
             try:
-                fs = FileSystem.load(options.storage)
+                filesystem = FileSystem.load(options.storage)
             except FileNotFoundError:
-                fs = FileSystem(options.storage)
-        CreeShell(fs).cmdloop()
+                filesystem = FileSystem(options.storage)
+        CreeShell(filesystem).cmdloop()
     except (OSError, ValueError, FileSystemError) as exc:
         print(f"fatal: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

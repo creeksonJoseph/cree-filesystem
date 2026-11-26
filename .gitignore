@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments and tooling
+.venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Local simulator state
+cree-fs.json
+cree-fs.json.tmp
+data/
