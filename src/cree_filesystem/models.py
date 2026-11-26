@@ -65,10 +65,14 @@ class Node:
                 "group_gid": self.group_gid, "mode": format(self.mode, "04o"),
                 "created_at": self.created_at, "modified_at": self.modified_at}
 
+    def base_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "owner_uid": self.owner_uid,
+                "group_gid": self.group_gid, "mode": self.mode,
+                "inode": self.inode, "created_at": self.created_at,
+                "modified_at": self.modified_at}
+
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": "node", "name": self.name, "owner_uid": self.owner_uid,
-                "group_gid": self.group_gid, "mode": self.mode, "inode": self.inode,
-                "created_at": self.created_at, "modified_at": self.modified_at}
+        return {**self.base_dict(), "kind": "node"}
 
 
 @dataclass
@@ -76,7 +80,7 @@ class File(Node):
     content: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {**super().to_dict(), "kind": "file", "content": self.content}
+        return {**self.base_dict(), "kind": "file", "content": self.content}
 
 
 @dataclass
@@ -85,7 +89,7 @@ class Directory(Node):
     children: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {**super().to_dict(), "kind": "directory",
+        return {**self.base_dict(), "kind": "directory",
                 "children": dict(self.children)}
 
 
