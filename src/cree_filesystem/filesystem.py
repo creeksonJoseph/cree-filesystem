@@ -536,7 +536,9 @@ class FileSystem:
         current = self.inodes.get(self.current_dir)
         if not isinstance(current, Directory):
             raise FileSystemError("Current directory inode is invalid")
-        if self.resolve(self.cwd).inode != self.current_dir:
+        # A process may retain its working directory after permissions change.
+        # Resolve as root here to validate identity, not current-user access.
+        if self.resolve(self.cwd, user=self.users["root"]).inode != self.current_dir:
             raise FileSystemError("Saved path and current directory inode do not match")
 
     @classmethod
