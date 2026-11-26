@@ -403,8 +403,6 @@ class FileSystem:
         if user is None:
             raise FileSystemError(f"Unknown user: {username}")
         self.current_user = user
-        self.cwd = "/"
-        self.current_dir = self.root_inode
         return user
 
     def search(
