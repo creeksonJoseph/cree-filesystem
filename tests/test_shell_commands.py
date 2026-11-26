@@ -279,6 +279,24 @@ class TestAllShellCommands(ShellTestCase):
         _, out = self.run_cmd('grep "" /workspace')
         self.assertIn("Search query cannot be empty", out)
 
+    def test_su_preserves_current_working_directory(self) -> None:
+        self.run_cmd("mkdir /project")
+        self.run_cmd("useradd alice")
+        self.run_cmd("cd /project")
+
+        _, out = self.run_cmd("pwd")
+        self.assertEqual(out.strip(), "/project")
+
+        _, out = self.run_cmd("su alice")
+        self.assertEqual(out.strip(), "Switched to alice")
+        _, out = self.run_cmd("pwd")
+        self.assertEqual(out.strip(), "/project")
+
+        _, out = self.run_cmd("su root")
+        self.assertEqual(out.strip(), "Switched to root")
+        _, out = self.run_cmd("pwd")
+        self.assertEqual(out.strip(), "/project")
+
     def test_chmod_chown_user_group_su_and_save_exit(self) -> None:
         self.run_cmd("groupadd devs")
         self.run_cmd("useradd alice")
