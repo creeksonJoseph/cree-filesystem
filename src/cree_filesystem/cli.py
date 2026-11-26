@@ -8,6 +8,7 @@ import sys
 from typing import Callable
 
 from .filesystem import FileSystem, FileSystemError
+from .permissions import PermissionDenied
 
 
 class CreeShell(cmd.Cmd):
