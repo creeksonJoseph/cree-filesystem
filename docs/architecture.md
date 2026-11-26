@@ -2,80 +2,83 @@
 
 ## Status
 
-Accepted for the current assignment.
+Accepted.
 
-## Context
+## Overview
 
-The project models a small Unix-inspired filesystem in Python. The objective is to demonstrate filesystem concepts—hierarchy, inode identity, path traversal, ownership, permissions, file operations and persistence—without implementing a kernel filesystem or reproducing the full Unix userland.
+Cree Filesystem is a userspace filesystem simulator implemented in Python. It provides a Unix-inspired directory hierarchy, inode identity, path resolution, ownership, permissions, file operations and JSON persistence through an interactive command-line interface.
 
-The implementation must remain achievable within the assignment time budget. Features that do not strengthen the required filesystem model are deliberately excluded.
+The project focuses on filesystem behaviour and clear separation of responsibilities. It does not implement a kernel filesystem or attempt to reproduce the complete Unix operating-system environment.
 
-## Decisions
+## Architectural decisions
 
-### 1. Use Python's standard-library cmd module for the shell
+### 1. Use Python's standard-library `cmd` module for the shell
 
-The interactive shell subclasses cmd.Cmd. Each command is exposed through a do_<command>() method, and cmd.Cmd owns the command loop, dispatch and built-in help behaviour.
+The interactive shell subclasses `cmd.Cmd`. Each command is exposed through a `do_<command>()` method, and `cmd.Cmd` manages the command loop, dispatch and built-in help behaviour.
 
-The shell is an adapter between terminal input and the filesystem API. It parses arguments, calls FileSystem methods and formats output. It must not own inode state, resolve paths, enforce permissions or implement filesystem mutations.
+The shell is an adapter between terminal input and the filesystem API. It parses arguments, calls `FileSystem` methods and formats output. It does not own inode state, resolve paths, enforce permissions or implement filesystem mutations.
 
-A hand-written input loop or a separate custom command dispatcher is not used.
+This keeps the command-line interface separate from the filesystem implementation and avoids maintaining a custom command dispatcher.
 
 ### 2. Use a central inode table
 
-FileSystem owns one mapping of inode IDs to Node instances:
+`FileSystem` owns one mapping of inode IDs to `Node` instances:
 
     inode_id -> Node
 
-Each Directory stores child entries as:
+Each `Directory` stores child entries as:
 
     entry_name -> inode_id
 
-A directory must not store nested File or Directory objects. This avoids maintaining two competing sources of truth and makes inode identity explicit.
+A directory does not store nested `File` or `Directory` objects. This avoids maintaining two competing sources of truth and makes inode identity explicit.
 
-The root directory is identified by root_inode. The current working directory is identified by current_dir. The cwd string is a display/path representation, not the identity of the current directory.
+The root directory is identified by `root_inode`. The current working directory is identified by `current_dir`. The cwd string is a display/path representation, not the identity of the current directory.
 
-Hard links and symbolic links are excluded. Therefore, every non-root inode has exactly one parent.
+Hard links and symbolic links are not currently supported. Consequently, every non-root inode has exactly one parent.
 
 ### 3. Keep filesystem behaviour behind a single API
 
-The responsibilities are separated as follows:
+Responsibilities are separated as follows:
 
-- CreeShell: command input, argument parsing, help, prompt and output.
-- FileSystem: inode table, path resolution, directory traversal, operations, user/group state, permission checks at operation boundaries and persistence.
-- Node, File, Directory, User and Group: filesystem data models and serialization.
-- PermissionManager: owner/group/other mode evaluation and octal mode parsing.
+- **CreeShell:** command input, argument parsing, help, prompt and output.
+- **FileSystem:** inode table, path resolution, directory traversal, filesystem operations, user/group state, permission checks at operation boundaries and persistence.
+- **Node, File, Directory, User and Group:** filesystem data models and serialization.
+- **PermissionManager:** owner/group/other mode evaluation and octal mode parsing.
 
-New shell commands should delegate to existing FileSystem operations. Filesystem rules should not be duplicated in command handlers.
+New shell commands should delegate to existing `FileSystem` operations. Filesystem rules should not be duplicated in command handlers.
 
 ### 4. Model Unix-style ownership and permissions
 
-Each node stores an owner UID, group GID and octal permission mode. Permission evaluation follows owner, then group, then other. The simulated root account bypasses permission checks.
+Each node stores an owner UID, group GID and octal permission mode. Permission evaluation follows the owner, group and other classes. The simulated root account bypasses permission checks.
 
-Users have a primary group and may belong to supplementary groups. User switching is a simulation convenience; password authentication and operating-system security boundaries are not part of the assignment.
+Users have a primary group and may belong to supplementary groups. User switching changes the active simulated user; it is not an authentication mechanism. Password authentication and operating-system security boundaries are outside the scope of this simulator.
 
 ### 5. Persist simulator state as versioned JSON
 
 The save file records the inode table, directory entry references, users, groups, root inode, current directory inode and current session user.
 
-Loading must rebuild the in-memory objects and validate references, reachability, parent counts, ownership IDs and the saved working directory before accepting the state.
+Loading rebuilds the in-memory objects and validates references, reachability, parent counts, ownership IDs and the saved working directory before accepting the state.
 
-The host filesystem is used only to read and write the simulator's JSON save file.
+The host filesystem is used only to read and write the simulator's JSON save file. Simulated files and directories are represented by the in-memory model and are not created as ordinary host filesystem entries.
 
-### 6. Keep the feature set bounded
+### 6. Keep the feature set focused
 
-Required capabilities:
+The current feature set covers:
 
-- Create and remove files/directories.
-- Navigate and inspect the directory hierarchy.
-- Rename nodes and preserve inode identity.
-- Enforce owner/group/other read, write and execute permissions.
-- Search by filename and file content.
-- Inspect inode metadata.
-- Save and restore state.
+- Creating and removing files and directories.
+- Navigating and inspecting the directory hierarchy.
+- Renaming nodes while preserving inode identity.
+- Enforcing owner/group/other read, write and execute permissions.
+- Searching by filename and file content.
+- Inspecting inode metadata.
+- Saving and restoring simulator state.
+- Copying and moving files or directory trees.
 
-Copy and move are useful secondary operations. The implementation should not add unrelated operating-system features at the expense of completing the required capabilities.
+The project prioritises a coherent filesystem model and predictable behaviour over implementing unrelated operating-system functionality.
 
 ## Explicit non-goals
+
+The following capabilities are intentionally outside the current project scope:
 
 - Kernel integration, mounting, disk blocks or physical storage allocation.
 - Hard links, symbolic links, journaling or crash recovery.
@@ -83,6 +86,8 @@ Copy and move are useful secondary operations. The implementation should not add
 - Full Unix shell compatibility, pipes, redirection, job control or host command execution.
 - Password authentication or real process/user isolation.
 
+These boundaries keep the implementation focused on the userspace filesystem model. They can be revisited if the project requirements change.
+
 ## Change control
 
-A proposed feature or refactor should preserve the decisions above. If a decision must change, update this document and explain the trade-off in the pull request before changing the implementation.
+Proposed features and refactors should preserve the architectural decisions above. When a change requires a decision to be revised, update this document and explain the reasoning and trade-offs in the associated change.
