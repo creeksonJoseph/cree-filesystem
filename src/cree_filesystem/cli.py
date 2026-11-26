@@ -93,18 +93,58 @@ class CreeShell(cmd.Cmd):
         print(" ".join(names))
 
     def do_ls(self, argument: str) -> None:
-        """ls [PATH] — list directory entries and their metadata."""
+        """ls [-a] [-l] [PATH] — list names or detailed inode metadata."""
         args = self._args(argument)
-        if len(args) > 1:
-            print("usage: ls [PATH]")
+        show_all = False
+        long_format = False
+        paths: list[str] = []
+
+        for item in args:
+            if item == "--":
+                paths.extend(args[args.index(item) + 1:])
+                break
+            if item in ("-a", "--all"):
+                show_all = True
+            elif item in ("-l", "--long"):
+                long_format = True
+            elif item.startswith("-") and item != "-":
+                flags = item[1:]
+                if not flags or any(flag not in "al" for flag in flags):
+                    print("usage: ls [-a] [-l] [PATH]")
+                    return
+                show_all = show_all or "a" in flags
+                long_format = long_format or "l" in flags
+            else:
+                paths.append(item)
+
+        if len(paths) > 1:
+            print("usage: ls [-a] [-l] [PATH]")
             return
-        entries = self._run(self.fs.list_dir, args[0] if args else ".")
+
+        entries = self._run(self.fs.list_dir, paths[0] if paths else ".")
         if entries is None:
             return
+
+        if not show_all:
+            entries = [item for item in entries if not item["name"].startswith(".")]
+
+        if not long_format:
+            print("  ".join(item["name"] for item in entries))
+            return
+
         for item in entries:
             kind = "d" if item["type"] == "directory" else "-"
+            mode = int(item["mode"], 8)
+            permissions = "".join(
+                letter if mode & bit else "-"
+                for bit, letter in (
+                    (0o400, "r"), (0o200, "w"), (0o100, "x"),
+                    (0o040, "r"), (0o020, "w"), (0o010, "x"),
+                    (0o004, "r"), (0o002, "w"), (0o001, "x"),
+                )
+            )
             print(
-                f"{kind}{item['mode']} {item['owner_uid']}:{item['group_gid']} "
+                f"{kind}{permissions} {item['owner_uid']}:{item['group_gid']} "
                 f"{item['inode']} {item['name']}"
             )
 
