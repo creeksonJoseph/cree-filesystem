@@ -404,7 +404,7 @@ class FileSystem:
                 if child is None:
                     raise FileSystemError(f"Corrupt inode reference: {inode}")
                 child_path = posixpath.join(current_path, name)
-                if query.casefold() in name.casefold():
+                if not content and query.casefold() in name.casefold():
                     results.append(child_path)
                 if isinstance(child, File) and content:
                     self._require(child, PM.READ)
@@ -473,8 +473,16 @@ class FileSystem:
         gid_map = {group.gid: group for group in self.groups.values()}
         if len(uid_map) != len(self.users) or len(gid_map) != len(self.groups):
             raise FileSystemError("Duplicate UID or GID in saved state")
-        if "root" not in self.users or not self.users["root"].is_root:
-            raise FileSystemError("Saved state must contain the root user")
+        if "root" not in self.users or self.users["root"].uid != 0:
+            raise FileSystemError("Saved state must contain UID 0 as root")
+        if any(user.is_root != (name == "root") for name, user in self.users.items()):
+            raise FileSystemError("Only the root account may have root privileges")
+        if any(name != user.username for name, user in self.users.items()):
+            raise FileSystemError("User table key does not match username")
+        if any(name != group.name for name, group in self.groups.items()):
+            raise FileSystemError("Group table key does not match group name")
+        if "root" not in self.groups or self.groups["root"].gid != 0:
+            raise FileSystemError("Saved state must contain GID 0 as root")
 
         for user in self.users.values():
             if user.primary_gid not in gid_map:
