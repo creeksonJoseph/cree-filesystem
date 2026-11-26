@@ -8,7 +8,6 @@ import sys
 from typing import Callable
 
 from .filesystem import FileSystem, FileSystemError
-from .permissions import PermissionDenied
 
 
 class CreeShell(cmd.Cmd):
@@ -286,8 +285,12 @@ class CreeShell(cmd.Cmd):
 
     def do_save(self, argument: str) -> None:
         """save — persist the simulated filesystem to JSON."""
-        if self._run(self.fs.save) is not None:
-            print("Filesystem saved.")
+        try:
+            self.fs.save()
+        except (FileSystemError, OSError) as exc:
+            print(f"error: could not save filesystem: {exc}")
+            return
+        print("Filesystem saved.")
 
     def do_exit(self, argument: str) -> bool:
         """exit — save the filesystem and leave the shell."""
