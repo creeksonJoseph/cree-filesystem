@@ -56,7 +56,7 @@ The default persistence file is cree-fs.json in the current working directory. T
 |---|---|
 | help | List commands or show command help |
 | pwd, cd PATH | Print or change the working directory |
-| ls [PATH], tree [PATH] | List entries or display the hierarchy |
+| ls [-a] [-l] [PATH], tree [PATH] | List names by default; `-l` shows metadata and `-a` includes dotfiles |
 | mkdir [-p] PATH, touch PATH | Create directories or files |
 | cat PATH, write PATH TEXT, append PATH TEXT | Read or modify file contents |
 | rm [-r] PATH | Remove a file or directory |
