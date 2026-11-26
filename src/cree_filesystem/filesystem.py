@@ -5,7 +5,6 @@ import json
 import posixpath
 import uuid
 from pathlib import Path
-from typing import Iterable
 
 from .models import Directory, File, Group, Node, User, node_from_dict
 from .permissions import PermissionDenied, PermissionManager as PM
@@ -33,6 +32,11 @@ class FileSystem:
         self.current_dir = root.inode
         self.cwd = "/"
         self.current_user = root_user
+
+    @property
+    def groups_by_gid(self) -> dict[int, Group]:
+        """Return the group table indexed by numeric GID."""
+        return {group.gid: group for group in self.groups.values()}
 
     @property
     def root(self) -> Directory:
