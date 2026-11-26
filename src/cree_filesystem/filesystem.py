@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import posixpath
+import uuid
 from pathlib import Path
 from .models import Directory, File, Group, Node, User, node_from_dict
 from .permissions import PermissionDenied, PermissionManager as PM
@@ -171,6 +172,8 @@ class FileSystem:
 
     def _reset_ownership(self, node: Node) -> None:
         node.owner_uid, node.group_gid = self.current_user.uid, self.current_user.primary_gid
+        node.inode = uuid.uuid4().hex[:12]
+        node.touch()
         if isinstance(node, Directory):
             for child in node.children.values():
                 self._reset_ownership(child)
@@ -191,10 +194,10 @@ class FileSystem:
             raise PermissionDenied("Only root can change ownership")
         if username not in self.users:
             raise FileSystemError(f"Unknown user: {username}")
+        if groupname and groupname not in self.groups:
+            raise FileSystemError(f"Unknown group: {groupname}")
         node.owner_uid = self.users[username].uid
         if groupname:
-            if groupname not in self.groups:
-                raise FileSystemError(f"Unknown group: {groupname}")
             node.group_gid = self.groups[groupname].gid
         node.touch()
 
