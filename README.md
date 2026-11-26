@@ -48,7 +48,7 @@ Choose a persistence file:
 
     uv run cree-fs --storage ./data/filesystem.json
 
-The default persistence file is cree-fs.json in the current working directory. The shell saves when save, exit or Ctrl-D is used. --fresh starts with a clean state; it does not delete an existing save file until the new state is saved.
+The default persistence file is cree-fs.json in the current working directory. The shell saves when `save`, `exit`, Ctrl-D or Ctrl-C is used. Ctrl-C exits cleanly after attempting to save; command-level errors are reported without terminating the REPL. --fresh starts with a clean state; it does not delete an existing save file until the new state is saved.
 
 ## Shell commands
 
